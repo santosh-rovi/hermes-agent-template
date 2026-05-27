@@ -1,0 +1,57 @@
+name: Sync fork + bump HERMES_REF
+
+on:
+  schedule:
+    - cron: "0 14 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-and-bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync fork from upstream template
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh repo sync ${{ github.repository }} --source praveen-ks-2001/hermes-agent-template --branch main
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Bump HERMES_REF if a newer release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          current=$(grep -oP '^ARG HERMES_REF=\K\S+' Dockerfile)
+          echo "Current HERMES_REF: $current"
+
+          if [[ "$current" == "main" ]]; then
+            echo "HERMES_REF is 'main' (bleeding edge) — leaving alone."
+            exit 0
+          fi
+
+          latest=$(gh release view --repo NousResearch/hermes-agent --json tagName -q .tagName)
+          echo "Latest upstream release: $latest"
+
+          if [[ "$current" == "$latest" ]]; then
+            echo "Already on latest release."
+            exit 0
+          fi
+
+          newest=$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -1)
+          if [[ "$newest" != "$latest" ]]; then
+            echo "Current ($current) is newer than latest release ($latest) — not downgrading."
+            exit 0
+          fi
+
+          sed -i "s|^ARG HERMES_REF=.*|ARG HERMES_REF=$latest|" Dockerfile
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Dockerfile
+          git commit -m "Bump HERMES_REF $current -> $latest"
+          git push
